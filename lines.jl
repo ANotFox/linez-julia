@@ -83,6 +83,15 @@ function parse_commandline()
         "--image", "-i"
             help = "Pass image filepath"
             required = true
+            arg_type = String
+        "--iterations", "-n"
+            help = "Number of iterations"
+            required = true
+            arg_type = Int
+        "--output", "-o"
+            help = "Output filepath for the final image"
+            arg_type = String
+            default = nothing
     end
 
     return parse_args(s)
@@ -90,7 +99,7 @@ end
 
 # Bresenham's line algorithm (more direct implementation)
 # adapted from https://github.com/rdeits/convex-segmentation/blob/master/julia/bresenham.jl
-function Line(x1::Int64, y1::Int64, x2::Int64, y2::Int64)
+function Line(x1::Int, y1::Int, x2::Int, y2::Int)
     dx = abs(x2 - x1)
     dy = abs(y2 - y1)
 
@@ -102,8 +111,8 @@ function Line(x1::Int64, y1::Int64, x2::Int64, y2::Int64)
     x = x1
     y = y1
 
-    x_coords = Int64[]
-    y_coords = Int64[]
+    x_coords = Int[]
+    y_coords = Int[]
 
     while true
         push!(x_coords, x)
@@ -127,36 +136,46 @@ function Line(x1::Int64, y1::Int64, x2::Int64, y2::Int64)
     x_coords, y_coords
 end
 
-function Line(x1, y1, x2, y2)
-	Line([int(round(z)) for z in [x1, y1, x2, y2]]...)
+function Line(x1::Real, y1::Real, x2::Real, y2::Real)
+	Line(round(Int, x1), round(Int, y1), round(Int, x2), round(Int, y2))
     # rounds the given values into integers
 end
 
-function apply!(approx, changes)
-    for (pos, new_colour) in changes
+function apply!(approx::AbstractMatrix{<:Colorant}, changes::Vector{Tuple{CartesianIndex{2}, RGB{Float32}}})
+    @inbounds for (pos, new_colour) in changes
         approx[pos] = new_colour
     end
 end
 
-function tick!(rng::AbstractRNG, target::Matrix{<:Colorant}, approx::Matrix{<:Colorant})
 
-    beg_x = rand(rng, 1:1:size(target, 1))
-    beg_y = rand(rng, 1:1:size(target, 2))
+function tick!(rng::AbstractRNG, target::AbstractMatrix{<:Colorant}, approx::AbstractMatrix{<:Colorant})::Bool
 
-    end_x = rand(rng, 1:1:size(target, 1))
-    end_y = rand(rng, 1:1:size(target, 2))
+    size(target) == size(approx) || error("Target and approx matrices must have same dimensions.")
+
+    img_rows, img_cols = size(target)
+
+    # Randomly pick start and end points for the line within image dimensions
+    beg_row = rand(rng, 1:img_rows)
+    beg_col = rand(rng, 1:img_cols)
+    end_row = rand(rng, 1:img_rows)
+    end_col = rand(rng, 1:img_cols)
 
     r = rand(rng)
     g = rand(rng)
     b = rand(rng)
 
     colour = RGB{Float32}(r, g, b)
-    x_coords, y_coords = Line(beg_x, beg_y, end_x, end_y)
+    row_coords, col_coords = Line(beg_row, beg_col, end_row, end_col)
 
-    changes = [(CartesianIndex(x, y), colour) for (x, y) in zip(x_coords, y_coords)]
+    changes = Tuple{CartesianIndex{2}, RGB{Float32}}[]
+    for (r, c) in zip(row_coords, col_coords)
+        if 1 <= r <= img_rows && 1 <= c <= img_cols
+            push!(changes, (CartesianIndex(r, c), colour))
+        end
+    end
 
     loss_delta_val = loss_delta(target, approx, changes)
-
+    # println("Loss delta: ", loss_delta_val)
     if loss_delta_val >= 0
         return false
     end
@@ -166,44 +185,118 @@ function tick!(rng::AbstractRNG, target::Matrix{<:Colorant}, approx::Matrix{<:Co
 end
 
 
-function pixel_loss(a::Matrix{<:Colorant}, b::Matrix{<:Colorant})
-    a = convert(Matrix{RGB{Float32}}, a)
-    b = convert(Matrix{RGB{Float32}}, b)
+function pixel_loss(a::Colorant, b::Colorant)
+    a_rgb = convert(RGB{Float32}, a)
+    b_rgb = convert(RGB{Float32}, b)
 
-    r_diffs = (red.(a) .- red.(b)).^2
-    g_diffs = (green.(a) .- green.(b)).^2 
-    b_diffs = (blue.(a) .- blue.(b)).^2
+    r_diff = (red(a_rgb) - red(b_rgb))^2
+    g_diff = (green(a_rgb) - green(b_rgb))^2
+    b_diff = (blue(a_rgb) - blue(b_rgb))^2
 
-    return sum(r_diffs .+ g_diffs .+ b_diffs)
+    return r_diff + g_diff + b_diff
 end
 
-function loss_delta(target::Matrix{<:Colorant}, source::Matrix{<:Colorant}, changes::Vector{Tuple{CartesianIndex{2}, RGB{Float32}}})
-    total_loss = 0.0
+function pixel_loss(a::AbstractMatrix{<:Colorant}, b::AbstractMatrix{<:Colorant})
+    size(a) == size(b) || throw(DimensionMismatch("Matrices must have the same size"))
+
+    total_diff = 0.0
+    @inbounds for i in eachindex(a)
+        total_diff += pixel_loss(a[i], b[i])
+    end
+    return total_diff
+end
+
+function loss_delta(target::AbstractMatrix{<:Colorant}, source::AbstractMatrix{<:Colorant}, changes::Vector{Tuple{CartesianIndex{2}, RGB{Float32}}})
+    total_delta_loss = 0.0
 
     for (pos, new_colour) in changes
         target_colour = convert(RGB{Float32}, target[pos])
-        approx_colour = convert(RGB{Float32}, approx[pos])
-        new_colour_f32 = convert(RGB{Float32}, new_colour)
+        current_source_colour = convert(RGB{Float32}, source[pos])
+        proposed_new_colour = convert(RGB{Float32}, new_colour)
 
-        loss_without_changes = pixel_loss(reshape([target_colour],1,1), reshape([approx_colour],1,1))
-        loss_with_changes = pixel_loss(reshape([target_colour],1,1), reshape([new_colour_f32],1,1))
+        loss_without_change = pixel_loss(target_colour, current_source_colour)
+        loss_with_change = pixel_loss(target_colour, proposed_new_colour)
 
-        total_loss += (loss_with_changes - loss_without_changes)
+        total_delta_loss += (loss_with_change - loss_without_change)
     end
 
-    return total_loss
-end    
+    return total_delta_loss
+end
+
+function approx_encode!(approx::AbstractMatrix{<:Colorant}, canvas::Vector{UInt32})
+    rows = size(approx, 1)
+    cols = size(approx, 2)
+    idx = 1
+
+    for r_idx in 1:rows
+        for c_idx in 1:cols
+            pixel = approx[r_idx, c_idx]
+
+            r = round(UInt32, red(pixel) * 255)
+            g = round(UInt32, green(pixel) * 255)
+            b = round(UInt32, blue(pixel) * 255)
+            canvas[idx] = (0xFF << 24) | (r << 16) | (g << 8) | b
+            idx += 1
+        end
+    end
+    return nothing
+end
 
 function main()
     parsed_args = parse_commandline()
     img_filepath = parsed_args["image"]
-    # global img = load("test.jpg")
-    global img = load(img_filepath)
-    global img2 = copy(img)
-    println("Pixel loss is ", pixel_loss(img, img2))
+    iterations = parsed_args["iterations"]
+    output_filepath = parsed_args["output"]
+
+    target = load(img_filepath)
+    if !(eltype(target) <: Colorant)
+        error("Expected a colour image file, but load returned type $(eltype(target)). Please provide a standard image format.")
+    end
+
+    img_rows, img_cols = size(target)
+    approx = zeros(eltype(target), img_rows, img_cols)
+
+    rng = Random.default_rng()
+    canvas = zeros(UInt32, img_rows * img_cols)
+
+    WINDOW_TITLE = "Lines Reconstruction"
+    WINDOW_FLAGS = MiniFB.WF_RESIZABLE
+
+    window = mfb_open_ex(WINDOW_TITLE, img_cols, img_rows, WINDOW_FLAGS)
+
+    if window === C_NULL
+        error("Failed to open MiniFB window.")
+    end
+
+    approx_encode!(approx, canvas)
+
+    while mfb_update(window, canvas) == MiniFB.STATE_OK
+        got_improvement = false
+
+        for _ in 1:iterations
+            got_improvement = got_improvement || tick!(rng, target, approx)
+        end
+
+        if got_improvement
+            approx_encode!(approx, canvas)
+        end
+    end
+
+    if output_filepath !== nothing
+        try
+            save(output_filepath, approx)
+            println("Final image saved to: $output_filepath")
+        catch e
+            println("Error saving final image: $e")
+        end
+    end
+
+    println("Application loop finished.")
+    # println("Pixel loss is ", pixel_loss(img, img2))
     # println("Line coordinates are:", Line(2, 0, 5, 6))
 
     # @btime pixel_loss(img, img2)
+    println("Final pixel loss is ", pixel_loss(target, approx))
 end
 
 main()
