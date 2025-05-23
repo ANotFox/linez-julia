@@ -1,0 +1,4 @@
+[deps]
+ArgParse = "c7e460c6-2fb9-53a9-8c5b-16f535851c63"
+Images = "916415d5-f1e6-5110-898d-aaa5f9f070e0"
+MiniFB = "cc649173-1898-4bb8-8a16-ca5f88bd87d9"
