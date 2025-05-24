@@ -1,13 +1,18 @@
 using MiniFB
 using ArgParse
 using Images
-using BenchmarkTools
 using Random
+
+# Buffers make it so much better for performance
+const LINE_BUF = Vector{Tuple{Int32,Int32}}(undef, 4096)
+const CHANGES_BUF = Vector{Tuple{CartesianIndex{2}, RGB{Float32}}}()
+const MAIN_RNG = Xoshiro() 
+
 
 function parse_commandline()
     s = ArgParseSettings(
         description = "Description: ",
-        version = "Version 0.1",
+        version = "Version 0.3",
         add_version = true
     )
 
@@ -17,9 +22,13 @@ function parse_commandline()
             required = true
             arg_type = String
         "--iterations", "-n"
-            help = "Number of iterations"
+            help = "Number of iterations to sample a line"
             required = true
             arg_type = Int
+        "--display-interval", "-d"
+            help = "Update display every N iterations"
+            arg_type = Int
+            default = 1
         "--output", "-o"
             help = "Output filepath for the final image"
             arg_type = String 
@@ -29,107 +38,86 @@ function parse_commandline()
     return parse_args(s) # Returns Dict{String, Any}
 end
 
-# Bresenham's line algorithm (more direct implementation)
+# --- Bresenham's line algorithm (more direct implementation)
 # adapted from https://github.com/rdeits/convex-segmentation/blob/master/julia/bresenham.jl
-function Line(x1::Int, y1::Int, x2::Int, y2::Int)
+function bresenham_line!(x1::Int32, y1::Int32, x2::Int32, y2::Int32)::Int32
     dx = abs(x2 - x1)
-    dy = abs(y2 - y1)
-
-    sx = x1 < x2 ? 1 : -1
-    sy = y1 < y2 ? 1 : -1
-
-    err = dx - dy
-
-    curr_x = x1 
-    curr_y = y1 
-
-    x_coords = Int[]
-    y_coords = Int[]
-
-    while true
-        push!(x_coords, curr_x)
-        push!(y_coords, curr_y)
-
-        if curr_x == x2 && curr_y == y2
-            break
-        end
-
-        e2 = 2 * err
-        if e2 > -dy
-            err -= dy
+    dy = -abs(y2 - y1)
+    sx = x1 < x2 ? Int32(1) : Int32(-1)
+    sy = y1 < y2 ? Int32(1) : Int32(-1)
+    err = dx + dy
+    i = Int32(1)
+    
+    curr_x = x1
+    curr_y = y1
+    
+     while true
+        LINE_BUF[i] = (curr_x, curr_y)
+        i += Int32(1)
+        (curr_x == x2 && curr_y == y2) && break
+        
+        e2 = Int32(2) * err
+        if e2 >= dy
+            err += dy
             curr_x += sx
         end
-        if e2 < dx 
+        if e2 <= dx
             err += dx
             curr_y += sy
         end
     end
-
-    return x_coords, y_coords 
+    
+    return i - Int32(1)  # Return number of points
 end
 
-function Line(x1::Real, y1::Real, x2::Real, y2::Real)
-	Line(round(Int, x1), round(Int, y1), round(Int, x2), round(Int, y2))
+@inline function bresenham_line!(x1::Int, y1::Int, x2::Int, y2::Int)::Int32
+    bresenham_line!(Int32(x1), Int32(y1), Int32(x2), Int32(y2))
 end
 
-function apply!(approx::AbstractMatrix{<:Colorant}, changes::Vector{Tuple{CartesianIndex{2}, RGB{Float32}}})
-     for (pos, new_colour) in changes
-        approx[pos] = new_colour 
-    end
-end
-
+# --- Sampling the line and calculating loss
 
 function tick!(rng::AbstractRNG, target::AbstractMatrix{<:Colorant}, approx::AbstractMatrix{<:Colorant})::Bool
-
-    size(target) == size(approx) || error("Target and approx matrices must have same dimensions.")
-
     img_rows, img_cols = size(target)
 
-    # Randomly pick start and end points for the line within image dimensions
-    beg_row = rand(rng, 1:img_rows)
-    beg_col = rand(rng, 1:img_cols)
-    end_row = rand(rng, 1:img_rows)
-    end_col = rand(rng, 1:img_cols)
+    beg_row = rand(rng, Int32(1):Int32(img_rows))
+    beg_col = rand(rng, Int32(1):Int32(img_cols))
+    end_row = rand(rng, Int32(1):Int32(img_rows))
+    end_col = rand(rng, Int32(1):Int32(img_cols))
 
-    r_rand = rand(rng) # Float64
-    g_rand = rand(rng) # Float64
-    b_rand = rand(rng) # Float64
-
-    colour = RGB{Float32}(r_rand, g_rand, b_rand) # Explicit RGB{Float32}
-    row_coords, col_coords = Line(beg_row, beg_col, end_row, end_col) # Calls Line(Int,Int,Int,Int)
-
-    changes = Vector{Tuple{CartesianIndex{2}, RGB{Float32}}}()
-
-    for (r_coord, c_coord) in zip(row_coords, col_coords) 
-        if (1 <= r_coord <= img_rows) && (1 <= c_coord <= img_cols) 
-            push!(changes, (CartesianIndex(r_coord, c_coord), colour))
+    colour = RGB{Float32}(rand(rng), rand(rng), rand(rng))
+    
+    num_points = bresenham_line!(beg_col, beg_row, end_col, end_row)  # Note: x,y order
+    
+    empty!(CHANGES_BUF)
+    
+     for i in 1:num_points
+        x, y = LINE_BUF[i]
+        if (1 <= y <= img_rows) && (1 <= x <= img_cols)
+            push!(CHANGES_BUF, (CartesianIndex(y, x), colour))
         end
     end
 
-    if isempty(changes)
-        return false
-    end
+    isempty(CHANGES_BUF) && return false
 
-    loss_delta_val = loss_delta(target, approx, changes) 
-    # println("Loss delta: ", loss_delta_val)
-    if loss_delta_val >= 0 # No improvement or worse
-        return false
-    end
+    loss_delta_val = loss_delta_fast(target, approx, CHANGES_BUF)
+    loss_delta_val >= 0.0 && return false
 
-    apply!(approx, changes)
+    apply!(approx, CHANGES_BUF)
     return true
 end
 
+@inline function pixel_loss_fast(a::RGB{Float32}, b::RGB{Float32})::Float64
+    dr = Float64(a.r) - Float64(b.r)
+    dg = Float64(a.g) - Float64(b.g)
+    db = Float64(a.b) - Float64(b.b)
+    return dr*dr + dg*dg + db*db
+end
 
 function pixel_loss(a::Colorant, b::Colorant)::Float64
     a_rgb = convert(RGB{Float32}, a)
     b_rgb = convert(RGB{Float32}, b)
-
-    r_diff_sq = (Float64(red(a_rgb)) - Float64(red(b_rgb)))^2
-    g_diff_sq = (Float64(green(a_rgb)) - Float64(green(b_rgb)))^2
-    b_diff_sq = (Float64(blue(a_rgb)) - Float64(blue(b_rgb)))^2
-
-    return r_diff_sq + g_diff_sq + b_diff_sq
+    return pixel_loss_fast(a_rgb, b_rgb)
+    # more performant
 end
 
 function pixel_loss(a::AbstractMatrix{<:Colorant}, b::AbstractMatrix{<:Colorant})::Float64
@@ -142,22 +130,24 @@ function pixel_loss(a::AbstractMatrix{<:Colorant}, b::AbstractMatrix{<:Colorant}
     return total_diff
 end
 
-function loss_delta(target::AbstractMatrix{<:Colorant}, source::AbstractMatrix{<:Colorant}, changes::Vector{Tuple{CartesianIndex{2}, RGB{Float32}}})::Float64
-    total_delta_loss = 0.0 
+function loss_delta_fast(target::AbstractMatrix{<:Colorant}, source::AbstractMatrix{<:Colorant}, 
+    changes::Vector{Tuple{CartesianIndex{2}, RGB{Float32}}})::Float64
+    total_delta_loss = 0.0
 
     for (pos, new_colour) in changes
-        target_at_pos = convert(RGB{Float32}, target[pos])
-        source_at_pos = convert(RGB{Float32}, source[pos])
+        target_rgb = convert(RGB{Float32}, target[pos])
+        source_rgb = convert(RGB{Float32}, source[pos])
 
-        loss_without_change = pixel_loss(target_at_pos, source_at_pos)
-        loss_with_change = pixel_loss(target_at_pos, new_colour) 
+        loss_without = pixel_loss_fast(target_rgb, source_rgb)
+        loss_with = pixel_loss_fast(target_rgb, new_colour)
 
-        total_delta_loss += (loss_with_change - loss_without_change)
+        total_delta_loss += (loss_with - loss_without)
     end
 
     return total_delta_loss
 end
 
+# --- Encoding the approx image to a canvas buffer (MiniFB compliant)
 function approx_encode!(approx::AbstractMatrix{<:Colorant}, canvas::Vector{UInt32})
     rows, cols = size(approx)
 
@@ -166,9 +156,9 @@ function approx_encode!(approx::AbstractMatrix{<:Colorant}, canvas::Vector{UInt3
         for c_idx in 1:cols
             pixel = approx[r_idx, c_idx] # eltype(approx)
 
-            r_comp = round(UInt32, clamp(red(pixel) * 255, 0, 255))
-            g_comp = round(UInt32, clamp(green(pixel) * 255, 0, 255))
-            b_comp = round(UInt32, clamp(blue(pixel) * 255, 0, 255))
+            r_comp = UInt32(round(clamp(red(pixel) * 255, 0, 255)))
+            g_comp = UInt32(round(clamp(green(pixel) * 255, 0, 255)))
+            b_comp = UInt32(round(clamp(blue(pixel) * 255, 0, 255)))
 
             canvas[current_canvas_idx] = (0xFF000000) | (r_comp << 16) | (g_comp << 8) | b_comp
             current_canvas_idx += 1
@@ -177,12 +167,19 @@ function approx_encode!(approx::AbstractMatrix{<:Colorant}, canvas::Vector{UInt3
     return nothing 
 end
 
+@inline function apply!(approx::AbstractMatrix{<:Colorant}, changes::Vector{Tuple{CartesianIndex{2}, RGB{Float32}}})
+    for (pos, new_colour) in changes
+       approx[pos] = new_colour 
+   end
+end
 
+# --- Main
 function main()
     parsed_args = parse_commandline()
     img_filepath = parsed_args["image"]::String
     iterations = parsed_args["iterations"]::Int
-    output_filepath = parsed_args["output"]
+    output_filepath = parsed_args["output"] # either String or nothing
+    display_interval = parsed_args["display-interval"]::Int
 
     target = load(img_filepath)
     if !(eltype(target) <: Colorant)
@@ -192,24 +189,33 @@ function main()
     img_rows, img_cols = size(target)
     approx = zeros(eltype(target), img_rows, img_cols)
 
-    rng = Random.default_rng() 
     canvas = zeros(UInt32, img_rows * img_cols)
-
-    WINDOW_TITLE = "Lines Reconstruction"
-
-    window = mfb_open_ex(WINDOW_TITLE, img_cols, img_rows, 0)
+    window = mfb_open_ex("Lines Reconstruction", img_cols, img_rows, 0)
 
     approx_encode!(approx, canvas)
+
+    # some statistical plotting
+    iteration_count = 0
+    total_improvements = 0
 
     while mfb_update(window, canvas) == MiniFB.STATE_OK
         got_improvement = false
 
         for _ in 1:iterations 
-            got_improvement = got_improvement || tick!(rng, target, approx) # tick! returns Bool
+            if tick!(MAIN_RNG, target, approx)
+                got_improvement = true
+                total_improvements += 1
+            end
+            iteration_count += 1       
         end
 
-        if got_improvement
+        if got_improvement && (iteration_count % display_interval == 0)
             approx_encode!(approx, canvas)
+        end
+        
+        if iteration_count % 10000 == 0
+            current_loss = pixel_loss(target, approx)
+            println("Iterations: $(iteration_count), Improvements: $(total_improvements), Current loss: $(round(current_loss, digits=2))")
         end
     end
 
@@ -224,8 +230,11 @@ function main()
         end
     end
 
-    # @btime pixel_loss(img, img2)
-    println("Final pixel loss is ", pixel_loss(target, approx))
+    println("Final statistics:")
+    println("  Total iterations: $(iteration_count)")
+    println("  Total improvements: $(total_improvements)")
+    println("  Improvement rate: $(round(100 * total_improvements / iteration_count, digits=4))%")
+    println("  Final pixel loss: $(round(pixel_loss(target, approx), digits=2))")
 end
 
 main()
