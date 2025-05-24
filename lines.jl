@@ -4,74 +4,6 @@ using Images
 using BenchmarkTools
 using Random
 
-function black_window()
-    WIDTH = 800
-    HEIGHT = 600
-    WINDOW_TITLE = "A Black Window"
-    WINDOW_FLAGS = MiniFB.WF_RESIZABLE
-
-    window = mfb_open_ex("$WINDOW_TITLE", WIDTH, HEIGHT, WINDOW_FLAGS)
-    buffer = zeros(UInt32, WIDTH * HEIGHT)
-    while true
-
-        state = mfb_update(window, buffer)
-        if state != MiniFB.STATE_OK
-            break
-        end
-    end
-end
-
-
-function plasma()
-    palette = zeros(UInt32, 512)
-    WIDTH = 320
-    HEIGHT = 240
-    inc = 90 / 64;
-
-    for c in 1:64
-        col = round(Int, (
-            255 * sin( (c-1) *  inc * π / 180) + 0.5
-        ))
-
-        palette[64 + c] = mfb_rgb(col, 0, 0)
-        palette[64*1 + c] = mfb_rgb(255, col,0)
-        palette[64*2 + c] = mfb_rgb(255-col, 255, 0)
-        palette[64*3 + c] = mfb_rgb(0, 255, 0)
-        palette[64*4 + c] = mfb_rgb(0, 255-col, 255)
-        palette[64*5 + c] = mfb_rgb(col, 0, 255)
-        palette[64*6 + c] = mfb_rgb(255, 0, 255-col)
-        palette[64*7 + c] = mfb_rgb(255-col, 0, 0)
-    end
-
-    window = mfb_open_ex("Plasma Test", WIDTH, HEIGHT, MiniFB.WF_RESIZABLE)
-    buffer = zeros(UInt32, WIDTH * HEIGHT)
-    mfb_set_target_fps(10)
-
-    time = 0
-    while mfb_wait_sync(window)
-        time_x = sin(time * π / 180)
-        time_y = cos(time * π / 180)
-        i = 1
-        for y in 1:HEIGHT
-            dy = cos((y * time_y) * π / 180)
-            for x in 1:WIDTH
-                dx = sin((x * time_x) * π / 180)
-                idx = round(Int, ((2 + dx + dy) * 0.25* 511) + 1)
-                buffer[i] = palette[idx]
-                i = i + 1
-            end
-        end
-        time += 1
-        state = mfb_update(window, buffer)
-        if state !=MiniFB.STATE_OK
-            break;
-        end
-    end
-    mfb_close(window)
-end
-
-# plasma()
-
 function parse_commandline()
     s = ArgParseSettings(
         description = "Description: ",
@@ -90,11 +22,11 @@ function parse_commandline()
             arg_type = Int
         "--output", "-o"
             help = "Output filepath for the final image"
-            arg_type = String
+            arg_type = String 
             default = nothing
     end
 
-    return parse_args(s)
+    return parse_args(s) # Returns Dict{String, Any}
 end
 
 # Bresenham's line algorithm (more direct implementation)
@@ -108,42 +40,41 @@ function Line(x1::Int, y1::Int, x2::Int, y2::Int)
 
     err = dx - dy
 
-    x = x1
-    y = y1
+    curr_x = x1 
+    curr_y = y1 
 
     x_coords = Int[]
     y_coords = Int[]
 
     while true
-        push!(x_coords, x)
-        push!(y_coords, y)
+        push!(x_coords, curr_x)
+        push!(y_coords, curr_y)
 
-        if x == x2 && y == y2
+        if curr_x == x2 && curr_y == y2
             break
         end
 
         e2 = 2 * err
         if e2 > -dy
             err -= dy
-            x += sx
+            curr_x += sx
         end
-        if e2 < dx
+        if e2 < dx 
             err += dx
-            y += sy
+            curr_y += sy
         end
     end
 
-    x_coords, y_coords
+    return x_coords, y_coords 
 end
 
 function Line(x1::Real, y1::Real, x2::Real, y2::Real)
 	Line(round(Int, x1), round(Int, y1), round(Int, x2), round(Int, y2))
-    # rounds the given values into integers
 end
 
 function apply!(approx::AbstractMatrix{<:Colorant}, changes::Vector{Tuple{CartesianIndex{2}, RGB{Float32}}})
-    @inbounds for (pos, new_colour) in changes
-        approx[pos] = new_colour
+     for (pos, new_colour) in changes
+        approx[pos] = new_colour 
     end
 end
 
@@ -160,23 +91,28 @@ function tick!(rng::AbstractRNG, target::AbstractMatrix{<:Colorant}, approx::Abs
     end_row = rand(rng, 1:img_rows)
     end_col = rand(rng, 1:img_cols)
 
-    r = rand(rng)
-    g = rand(rng)
-    b = rand(rng)
+    r_rand = rand(rng) # Float64
+    g_rand = rand(rng) # Float64
+    b_rand = rand(rng) # Float64
 
-    colour = RGB{Float32}(r, g, b)
-    row_coords, col_coords = Line(beg_row, beg_col, end_row, end_col)
+    colour = RGB{Float32}(r_rand, g_rand, b_rand) # Explicit RGB{Float32}
+    row_coords, col_coords = Line(beg_row, beg_col, end_row, end_col) # Calls Line(Int,Int,Int,Int)
 
-    changes = Tuple{CartesianIndex{2}, RGB{Float32}}[]
-    for (r, c) in zip(row_coords, col_coords)
-        if 1 <= r <= img_rows && 1 <= c <= img_cols
-            push!(changes, (CartesianIndex(r, c), colour))
+    changes = Vector{Tuple{CartesianIndex{2}, RGB{Float32}}}()
+
+    for (r_coord, c_coord) in zip(row_coords, col_coords) 
+        if (1 <= r_coord <= img_rows) && (1 <= c_coord <= img_cols) 
+            push!(changes, (CartesianIndex(r_coord, c_coord), colour))
         end
     end
 
-    loss_delta_val = loss_delta(target, approx, changes)
+    if isempty(changes)
+        return false
+    end
+
+    loss_delta_val = loss_delta(target, approx, changes) 
     # println("Loss delta: ", loss_delta_val)
-    if loss_delta_val >= 0
+    if loss_delta_val >= 0 # No improvement or worse
         return false
     end
 
@@ -185,37 +121,36 @@ function tick!(rng::AbstractRNG, target::AbstractMatrix{<:Colorant}, approx::Abs
 end
 
 
-function pixel_loss(a::Colorant, b::Colorant)
+function pixel_loss(a::Colorant, b::Colorant)::Float64
     a_rgb = convert(RGB{Float32}, a)
     b_rgb = convert(RGB{Float32}, b)
 
-    r_diff = (red(a_rgb) - red(b_rgb))^2
-    g_diff = (green(a_rgb) - green(b_rgb))^2
-    b_diff = (blue(a_rgb) - blue(b_rgb))^2
+    r_diff_sq = (Float64(red(a_rgb)) - Float64(red(b_rgb)))^2
+    g_diff_sq = (Float64(green(a_rgb)) - Float64(green(b_rgb)))^2
+    b_diff_sq = (Float64(blue(a_rgb)) - Float64(blue(b_rgb)))^2
 
-    return r_diff + g_diff + b_diff
+    return r_diff_sq + g_diff_sq + b_diff_sq
 end
 
-function pixel_loss(a::AbstractMatrix{<:Colorant}, b::AbstractMatrix{<:Colorant})
+function pixel_loss(a::AbstractMatrix{<:Colorant}, b::AbstractMatrix{<:Colorant})::Float64
     size(a) == size(b) || throw(DimensionMismatch("Matrices must have the same size"))
 
-    total_diff = 0.0
-    @inbounds for i in eachindex(a)
-        total_diff += pixel_loss(a[i], b[i])
+    total_diff = 0.0 
+     for i in eachindex(a) 
+        total_diff += pixel_loss(a[i], b[i]) 
     end
     return total_diff
 end
 
-function loss_delta(target::AbstractMatrix{<:Colorant}, source::AbstractMatrix{<:Colorant}, changes::Vector{Tuple{CartesianIndex{2}, RGB{Float32}}})
-    total_delta_loss = 0.0
+function loss_delta(target::AbstractMatrix{<:Colorant}, source::AbstractMatrix{<:Colorant}, changes::Vector{Tuple{CartesianIndex{2}, RGB{Float32}}})::Float64
+    total_delta_loss = 0.0 
 
     for (pos, new_colour) in changes
-        target_colour = convert(RGB{Float32}, target[pos])
-        current_source_colour = convert(RGB{Float32}, source[pos])
-        proposed_new_colour = convert(RGB{Float32}, new_colour)
+        target_at_pos = convert(RGB{Float32}, target[pos])
+        source_at_pos = convert(RGB{Float32}, source[pos])
 
-        loss_without_change = pixel_loss(target_colour, current_source_colour)
-        loss_with_change = pixel_loss(target_colour, proposed_new_colour)
+        loss_without_change = pixel_loss(target_at_pos, source_at_pos)
+        loss_with_change = pixel_loss(target_at_pos, new_colour) 
 
         total_delta_loss += (loss_with_change - loss_without_change)
     end
@@ -224,57 +159,53 @@ function loss_delta(target::AbstractMatrix{<:Colorant}, source::AbstractMatrix{<
 end
 
 function approx_encode!(approx::AbstractMatrix{<:Colorant}, canvas::Vector{UInt32})
-    rows = size(approx, 1)
-    cols = size(approx, 2)
-    idx = 1
+    rows, cols = size(approx)
 
+    current_canvas_idx = 1
     for r_idx in 1:rows
         for c_idx in 1:cols
-            pixel = approx[r_idx, c_idx]
+            pixel = approx[r_idx, c_idx] # eltype(approx)
 
-            r = round(UInt32, red(pixel) * 255)
-            g = round(UInt32, green(pixel) * 255)
-            b = round(UInt32, blue(pixel) * 255)
-            canvas[idx] = (0xFF << 24) | (r << 16) | (g << 8) | b
-            idx += 1
+            r_comp = round(UInt32, clamp(red(pixel) * 255, 0, 255))
+            g_comp = round(UInt32, clamp(green(pixel) * 255, 0, 255))
+            b_comp = round(UInt32, clamp(blue(pixel) * 255, 0, 255))
+
+            canvas[current_canvas_idx] = (0xFF000000) | (r_comp << 16) | (g_comp << 8) | b_comp
+            current_canvas_idx += 1
         end
     end
-    return nothing
+    return nothing 
 end
+
 
 function main()
     parsed_args = parse_commandline()
-    img_filepath = parsed_args["image"]
-    iterations = parsed_args["iterations"]
+    img_filepath = parsed_args["image"]::String
+    iterations = parsed_args["iterations"]::Int
     output_filepath = parsed_args["output"]
 
     target = load(img_filepath)
     if !(eltype(target) <: Colorant)
-        error("Expected a colour image file, but load returned type $(eltype(target)). Please provide a standard image format.")
+        error("Expected a colour image file, but not type $(eltype(target)).")
     end
 
     img_rows, img_cols = size(target)
     approx = zeros(eltype(target), img_rows, img_cols)
 
-    rng = Random.default_rng()
+    rng = Random.default_rng() 
     canvas = zeros(UInt32, img_rows * img_cols)
 
     WINDOW_TITLE = "Lines Reconstruction"
-    WINDOW_FLAGS = MiniFB.WF_RESIZABLE
 
-    window = mfb_open_ex(WINDOW_TITLE, img_cols, img_rows, WINDOW_FLAGS)
-
-    if window === C_NULL
-        error("Failed to open MiniFB window.")
-    end
+    window = mfb_open_ex(WINDOW_TITLE, img_cols, img_rows, 0)
 
     approx_encode!(approx, canvas)
 
     while mfb_update(window, canvas) == MiniFB.STATE_OK
         got_improvement = false
 
-        for _ in 1:iterations
-            got_improvement = got_improvement || tick!(rng, target, approx)
+        for _ in 1:iterations 
+            got_improvement = got_improvement || tick!(rng, target, approx) # tick! returns Bool
         end
 
         if got_improvement
@@ -282,7 +213,9 @@ function main()
         end
     end
 
-    if output_filepath !== nothing
+    mfb_close(window)
+
+    if output_filepath !== nothing && output_filepath isa String
         try
             save(output_filepath, approx)
             println("Final image saved to: $output_filepath")
@@ -290,10 +223,6 @@ function main()
             println("Error saving final image: $e")
         end
     end
-
-    println("Application loop finished.")
-    # println("Pixel loss is ", pixel_loss(img, img2))
-    # println("Line coordinates are:", Line(2, 0, 5, 6))
 
     # @btime pixel_loss(img, img2)
     println("Final pixel loss is ", pixel_loss(target, approx))
