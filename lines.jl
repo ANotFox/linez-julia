@@ -39,7 +39,7 @@ function parse_commandline()
 end
 
 # --- Bresenham's line algorithm (more direct implementation)
-# adapted from https://github.com/rdeits/convex-segmentation/blob/master/julia/bresenham.jl
+# Learnt and adapted from https://github.com/rdeits/convex-segmentation/blob/master/julia/bresenham.jl
 function bresenham_line!(x1::Int32, y1::Int32, x2::Int32, y2::Int32)::Int32
     dx = abs(x2 - x1)
     dy = -abs(y2 - y1)
