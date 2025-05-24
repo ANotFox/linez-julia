@@ -9,6 +9,34 @@ A Julia port of the original [linez](https://github.com/Patryk27/linez) project 
   <img height="512" src="outputs/pearl2.jpg" />
 </p>
 
+## In-between Images
+
+<table>
+  <tr>
+    <td><strong>Blurry</strong></td>
+    <td><strong>Cleaner</strong></td>
+    <td><strong>Final</strong></td>
+  </tr>
+  <tr>
+    <td><img src="outputs/night1.png" height="300"></td>
+    <td><img src="outputs/night2.png" height="300"></td>
+    <td><img src="outputs/night3.jpg" height="300"></td>
+  </tr>
+</table>
+
+<table>
+  <tr>
+    <td><strong>Blurry</strong></td>
+    <td><strong>Blurry</strong></td>
+    <td><strong>Final</strong></td>
+  </tr>
+  <tr>
+    <td><img src="outputs/bunny1.png" height="320"></td>
+    <td><img src="outputs/bunny2.png" height="320"></td>
+    <td><img src="outputs/bunny3.jpg" height="320"></td>
+  </tr>
+</table>
+
 ## Usage
 
 ```shell
